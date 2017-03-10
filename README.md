@@ -1,7 +1,11 @@
 Using Websockets to transmit orientation data from smartphone to Unity
 ------------
 
-This repository provides a starting point for Unity projects that desire to use orientation data from the smartphone.
+This repository provides a starting point for Unity projects that need orientation data from the smartphone.
+
+Example of this code is used here to track chair orientation:
+https://www.youtube.com/watch?v=mVOCHHVTcis
+More info: http://flrnmrr.com/2017/2/28/reducing-vr-locomotion-motion-sickness-mech-cockpit-controls
 
 Install
 =======
@@ -12,7 +16,7 @@ Inside index.html, make sure to change the IP address to the computer hosting th
 
 After running the Unity project, tap "Start" on the phone. You should see the cube in the scene rotate from the phones orientation.
 
-http://i.imgur.com/Nk0kgnL.png
+![Alt text](http://i.imgur.com/Nk0kgnL.png "Screenshot of Unity project running")
 
 
 License
