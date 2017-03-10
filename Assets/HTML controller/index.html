@@ -1,0 +1,377 @@
+<!DOCTYPE HTML>
+<html>
+   <head>
+	<meta name="viewport" content="width=850">
+	<script src="hammer.js"></script>
+	<script src="querystring.js"></script>
+
+<style>
+
+body {
+	color:green;
+	background-color:black;
+	margin:0;padding:0;
+	width:850px;
+}
+
+#rawDataStream {
+	display:block;
+}
+
+
+#ItemPreview{
+	position:absolute;
+	top:0;
+	left:105px;
+}
+
+#runWSButton{
+	position:absolute;
+	right:65px;
+	top:0px;
+	display:block;
+	line-height:75px;
+	height:75px;
+	width:120px;
+	text-align:center;
+	color:black;
+}
+.connected {
+	background-color:green;
+	display:none !important;
+	
+}
+.disconnected {
+	background-color:yellow;
+}
+
+#TouchArea {
+	width:850px;
+	height:100%;
+	//background-color:grey;
+	border:1px solid black;
+	margin: 0 auto;
+	box-sizing:border-box;
+	position:absolute;
+	top:0;
+	left:0;
+}
+
+#feedWrapper{
+	max-width:850px;
+	margin: 0 auto;
+	display:block;
+}
+
+h1 {
+	text-align:center;
+}
+
+#serverToken {
+	
+	position:fixed;
+	bottom:0;
+	left:0;
+	width:100%;
+	text-align:center;
+	color:gray;
+}
+
+</style>
+
+   </head>
+   <body>
+   <h1>websocket-unity stream client</h1>
+
+
+	<ul id="rawDataStream">
+		<li>acceleration x: <span id="accelerationX"></span>g</li>
+		<li>acceleration y: <span id="accelerationY"></span>g</li>
+		<li>acceleration z: <span id="accelerationZ"></span>g</li>
+		<li>rotation alpha: <span id="rotationAlpha"></span>degree</li>
+		<li>rotation beta: <span id="rotationBeta"></span>degree</li>
+		<li>rotation gamma: <span id="rotationGamma"></span>degree</li>
+		<li>compass heading by integration: <span id="compassHeadingByIntegration">0</span>degrees</li>
+		<li>compass heading: <span id="compassHeading">0</span>degrees</li>
+		<li>compass accuracy: <span id="compassAccuracy"></span>degrees</li>
+		<li>calc pitch: <span id="calcPitch"></span>degrees</li>
+		<li>calc roll: <span id="calcRoll"></span>degrees</li>
+	</ul>
+
+<div id="feedWrapper">
+	<img id="ItemPreview" />
+</div>
+
+<div id="TouchArea">
+	
+</div>
+
+<div id="sse">
+   <a id="runWSButton" class="disconnected" href="javascript:WebSocketTest()">Start</a>
+</div>
+
+<span id="serverToken"></span>
+
+  <script type="text/javascript">
+
+	//On connect, websocket server should reply back with a unique token to identify client
+	var serverToken ="";
+
+	var lastSensorTimestamp = Date.now();
+
+	if(QueryString.c != undefined){
+		var SERVER_IP = QueryString.c; //"localhost"
+	} else {
+		var SERVER_IP = "192.168.1.107"; //"localhost"
+	}
+	
+	var alpha = 0.15; //low pass filtering parameter for accelerometer data
+	var meanFilterGx = 0;
+	var meanFilterGy = 0;
+	var meanFilterGz = 0;
+
+	var toucharea = document.getElementById("TouchArea");
+	
+	var touchDeltaX = 0;
+	var touchDeltaY = 0;
+	var eventType = "";
+	
+	var startYaw = null; // integrate rotation into this value;
+	
+	var hammertime = new Hammer(toucharea); //fast touchevents
+	hammertime.on("pan tap press pressup", function(ev) {
+		toucharea.textContent = ev.type +" gesture detected.";
+		eventType = ev.type
+		
+		if(ev.type = "pan"){
+			//console.log(ev.deltaX + " " +ev.deltaY);
+			touchDeltaX = ev.deltaX;
+			touchDeltaY = ev.deltaY;
+		} else{
+			touchDeltaX = 0;
+			touchDeltaY = 0;
+		}
+	});
+	
+	hammertime.get('pan').set({ direction: Hammer.DIRECTION_ALL });
+	hammertime.get('press').set({ time: 231 });
+	
+	function resetTouchDeltas(e){
+		touchDeltaX = 0;
+		touchDeltaY = 0;
+	}
+	
+	window.ontouchend = resetTouchDeltas;
+	
+
+	function rollFromAccelerometer(Gx,Gy,Gz){
+		/* 
+		https://theccontinuum.com/2012/09/24/arduino-imu-pitch-roll-from-accelerometer/
+		*/
+		roll = Math.atan(Gx / Math.sqrt(Gy*Gy + Gz*Gz));
+		return roll;
+		
+	}
+	
+	function pitchFromAccelerometer(Gx,Gy,Gz){
+		/* 
+		https://theccontinuum.com/2012/09/24/arduino-imu-pitch-roll-from-accelerometer/
+		*/
+		pitch = Math.atan(Gy / Math.sqrt(Gx*Gx + Gz*Gz));
+		return pitch;
+		
+	}
+	
+	function preventDefault(e) {
+	  e = e || window.event;
+	  if (e.preventDefault)
+	      e.preventDefault();
+	  e.returnValue = false;  
+	}
+	
+	var ws;
+	var lastMsgSent = "";
+	function WebSocketSendFrame(){
+		
+		//check if any user input:
+		
+		if(touchDeltaX > 0.01 || touchDeltaX < -0.01){
+			//touchDeltaX = touchDeltaX-(touchDeltaX/4);
+		} else {
+			touchDeltaX = 0;
+		}
+		
+		if(touchDeltaY > 0.01 || touchDeltaY < -0.01){
+			//touchDeltaY = touchDeltaY-(touchDeltaY/4);
+		} else {
+			touchDeltaY = 0;
+		}
+				
+		//send to websocket server
+		var fusedHeading = document.getElementById("compassHeadingByIntegration").innerHTML.substring(0,7);
+		var truncatedPitch = document.getElementById("calcPitch").innerHTML.substring(0,7);
+		var truncatedRoll = document.getElementById("calcRoll").innerHTML.substring(0,7);
+		
+		var wsMessage = {"inputname":"touchpad","wsevent":"update","deltaX":touchDeltaX, "deltaY":touchDeltaY, "serverToken":serverToken, "yaw":parseFloat(fusedHeading), "pitch":parseFloat(truncatedPitch), "roll":parseFloat(truncatedRoll)};
+		
+		var jsonString = JSON.stringify(wsMessage)
+		if(lastMsgSent != jsonString){
+		 	console.log(jsonString);
+		 	ws.send(jsonString);
+		 	lastMsgSent = jsonString;
+		}		
+		
+	}
+	
+     function WebSocketTest()
+     {
+	
+		startYaw = null;
+	
+		var userInputServerUpdateInterval;
+
+        if ("WebSocket" in window)
+        {
+          // alert("WebSocket is supported by your Browser!");
+           
+           // Let us open a web socket
+           ws = new WebSocket("ws://"+SERVER_IP+":8051/webdata")
+			
+           ws.onopen = function()
+           {
+              // Web Socket is connected, send data using send()
+              //ws.send("PING from webclient 1 2");
+			console.log("pinged");
+             // alert("Message is sent...");
+			  document.getElementById("runWSButton").className = "connected";
+			  document.getElementById("runWSButton").textContent = "";
+			
+			if (window.DeviceMotionEvent != undefined) {
+				
+			  userInputServerUpdateInterval = setInterval(WebSocketSendFrame,11);
+			
+			}
+           };
+			//meanFilterFPS = 0;
+           ws.onmessage = function (evt) 
+           { 
+			
+			if(serverToken == ""){
+				serverToken = evt.data;
+				document.getElementById("serverToken").textContent = serverToken;
+				console.log("serverToken set: "+evt.data);
+			} else {
+			console.log("new message received: "+evt.data);
+              var received_msg = evt.data;
+				//if(Date.now() - lastFrameMilis > 16){
+					if(evt.data.substring(0,1) != "{"){
+				  		document.getElementById("ItemPreview").src = evt.data;
+					} else {
+						//parse json message, do something with it
+						console.log("RECEIVED NON-JSON FORMATTED MESSAGE")
+						console.log(evt.data)
+					}
+
+				document.getElementById("runWSButton").textContent = "connected"			
+			}
+           };
+			
+           ws.onclose = function()
+           { 
+              // websocket is closed.
+			  document.getElementById("runWSButton").className = "disconnected";
+			  document.getElementById("runWSButton").textContent = "Start";
+			
+			  clearInterval(userInputServerUpdateInterval);
+				serverToken = "";
+              console.log("Connection is closed..."); 
+           };
+        }
+        
+        else
+        {
+           // The browser doesn't support WebSocket
+           alert("WebSocket NOT supported by your Browser!");
+        }
+     }
+
+	if (window.DeviceMotionEvent != undefined) {
+		window.ondevicemotion = function(e) {
+			
+			document.getElementById("accelerationX").innerHTML = e.accelerationIncludingGravity.x;
+			document.getElementById("accelerationY").innerHTML = e.accelerationIncludingGravity.y;
+			document.getElementById("accelerationZ").innerHTML = e.accelerationIncludingGravity.z;
+
+			if ( e.rotationRate ) {
+				document.getElementById("rotationAlpha").innerHTML = e.rotationRate.alpha;
+				document.getElementById("rotationBeta").innerHTML = e.rotationRate.beta;
+				document.getElementById("rotationGamma").innerHTML = e.rotationRate.gamma;
+				
+					var d = new Date();
+					timeMS = d.getTime();
+					if(Math.abs(e.rotationRate.gamma) > 0.15){
+						var yawAmount = parseFloat(e.rotationRate.gamma) * (Date.now() - lastSensorTimestamp)/1000;
+						startYaw -= yawAmount;
+						if(startYaw > 360){
+							startYaw = (startYaw%360);
+						}
+						if(startYaw < 0){
+							startYaw = 360+(startYaw%360);
+						}
+
+						
+					}
+					
+					document.getElementById("compassHeadingByIntegration").innerHTML = (98*startYaw + 1*parseFloat(document.getElementById("compassHeading").innerHTML) + 1*parseFloat(document.getElementById("compassHeadingByIntegration").innerHTML) )/100;
+					
+					/*var headingVal = document.getElementById("compassHeading").innerHTML.substring(0,7);
+					accelX = parseFloat( document.getElementById("accelerationX").innerHTML.substring(0,7) )
+					accelY = parseFloat( document.getElementById("accelerationY").innerHTML.substring(0,7) )
+					accelZ = parseFloat( document.getElementById("accelerationZ").innerHTML.substring(0,7) )
+					*/
+					//low pass filter to get rid of jiggling. Adjust alpha parameter at top to adjust response
+					meanFilterGx = (1 - alpha) * meanFilterGx + alpha * e.accelerationIncludingGravity.x;
+					meanFilterGy = (1 - alpha) * meanFilterGy + alpha * e.accelerationIncludingGravity.y;
+					meanFilterGz = (1 - alpha) * meanFilterGz + alpha * e.accelerationIncludingGravity.z;
+
+					var pitchVal = pitchFromAccelerometer(meanFilterGx, meanFilterGy, meanFilterGz);
+					var rollVal = rollFromAccelerometer(meanFilterGx, meanFilterGy, meanFilterGz);
+
+					//update UI:
+					document.getElementById("calcPitch").innerHTML = pitchVal * 180 / Math.PI;
+					document.getElementById("calcRoll").innerHTML = rollVal * 180 / Math.PI;
+					
+					
+			}
+			
+			lastSensorTimestamp = Date.now();		
+		}
+	}
+	
+	if (window.DeviceOrientationEvent) {
+	  // Listen for the deviceorientation event and handle the raw data
+	
+	  window.addEventListener('deviceorientation', function(eventData) {
+	    var compassdir;
+
+	    if(event.webkitCompassHeading) {
+	      // Apple works only with this, alpha doesn't work
+	      compassdir = event.webkitCompassHeading;  			
+			document.getElementById("compassAccuracy").innerHTML = event.webkitCompassAccuracy;
+			
+	    }
+	    else compassdir = event.alpha;
+	
+		if(startYaw == null){ //initialize value
+			startYaw = compassdir;
+		}
+	
+		document.getElementById("compassHeading").innerHTML = compassdir;
+	
+	  });
+	}
+	
+  </script>
+
+   </body>
+</html>
